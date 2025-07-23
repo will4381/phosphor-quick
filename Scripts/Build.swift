@@ -12,8 +12,23 @@ enum Build {
     static func main() async throws {
         shell("git", "submodule", "update", "--remote", "--init", "--force", "--recursive")
         
-        let icons = try await buildAssets()
+        // Extract base icons from regular directory
+        let icons = try await extractBaseIcons()
+        print("📦 Extracted \(icons.count) base icons")
+        
+        // Copy base SVG files
+        try await copyBaseSVGs(icons)
+        print("📁 Copied base SVG files")
+        
+        // Generate Icons.swift
         try await emitSource(icons: icons)
+        print("⚡ Generated source code")
+        
+        // Clean up old weight variants
+        try await cleanupOldAssets()
+        print("🧹 Cleaned up old assets")
+        
+        print("✅ Build complete! Build times will be dramatically faster.")
     }
 }
 
@@ -57,59 +72,84 @@ extension String {
     }
 }
 
-func buildAssets() async throws -> Set<String> {
-    let CORE_DIR = URL(fileURLWithPath: "./core/assets", isDirectory: true)
-    let ASSETS_DIR = URL(fileURLWithPath: "./Sources/PhosphorSwift/Resources/Assets.xcassets/SVG", isDirectory: true)
-    
+func extractBaseIcons() async throws -> Set<String> {
+    let CORE_REGULAR_DIR = URL(fileURLWithPath: "./core/assets/regular", isDirectory: true)
     let fm = FileManager.default
-    let encoder = JSONEncoder()
+    var baseIcons: Set<String> = Set()
     
-    var icons: Set<String> = Set()
-    
-    do {
-        let resourceKeys: [URLResourceKey] = [.creationDateKey, .isDirectoryKey]
-        let enumerator = fm.enumerator(
-            at: CORE_DIR,
-            includingPropertiesForKeys: resourceKeys,
-            options: [.skipsHiddenFiles])!
-        
-        for case let fileURL as URL in enumerator {
-            let resourceValues = try fileURL.resourceValues(forKeys: Set(resourceKeys))
-            if !resourceValues.isDirectory! {
-                let fileName = fileURL.deletingPathExtension().lastPathComponent
-                let directory = ASSETS_DIR.appendingPathComponent("\(fileName).imageset")
-                let svgURL = directory.appendingPathComponent("\(fileName).svg")
-                
-                let contents = try encoder.encode(Contents.forFile(filename: "\(fileName).svg"))
-                
-                try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
-                
-                if fm.fileExists(atPath: svgURL.path()) {
-                    try fm.removeItem(at: svgURL)
-                }
-         
-                try fm.copyItem(at: fileURL, to: svgURL)
-                try contents.write(to: directory.appendingPathComponent("Contents.json"), options: .atomic)
-            
-                if !(fileName.hasSuffix("-thin") || fileName.hasSuffix("-light") || fileName.hasSuffix("-bold") || fileName.hasSuffix("-fill") || fileName.hasSuffix("-duotone")) {
-                    icons.insert(fileName)
-                }
-                
-                print(fileName, contents)
-            }
-        }
-    } catch {
-        print(error)
+    guard fm.fileExists(atPath: CORE_REGULAR_DIR.path) else {
+        print("⚠️  Core regular assets directory not found.")
+        throw BuildError.missingCoreAssets
     }
     
-    return icons
+    let resourceKeys: [URLResourceKey] = [.isDirectoryKey]
+    guard let enumerator = fm.enumerator(
+        at: CORE_REGULAR_DIR,
+        includingPropertiesForKeys: resourceKeys,
+        options: [.skipsHiddenFiles]
+    ) else {
+        throw BuildError.cannotEnumerateAssets
+    }
+    
+    for case let fileURL as URL in enumerator {
+        let resourceValues = try fileURL.resourceValues(forKeys: Set(resourceKeys))
+        guard !resourceValues.isDirectory! else { continue }
+        
+        let fileName = fileURL.deletingPathExtension().lastPathComponent
+        baseIcons.insert(fileName)
+    }
+    
+    return baseIcons
+}
+
+func copyBaseSVGs(_ baseIcons: Set<String>) async throws {
+    let CORE_REGULAR_DIR = URL(fileURLWithPath: "./core/assets/regular", isDirectory: true)
+    let ASSETS_DIR = URL(fileURLWithPath: "./Sources/PhosphorSwift/Resources/BaseSVGs", isDirectory: true)
+    let fm = FileManager.default
+    
+    // Create base SVGs directory
+    if fm.fileExists(atPath: ASSETS_DIR.path) {
+        try fm.removeItem(at: ASSETS_DIR)
+    }
+    try fm.createDirectory(at: ASSETS_DIR, withIntermediateDirectories: true)
+    
+    // Copy each base icon from regular directory
+    for iconName in baseIcons {
+        let sourceURL = CORE_REGULAR_DIR.appendingPathComponent("\(iconName).svg")
+        let destURL = ASSETS_DIR.appendingPathComponent("\(iconName).svg")
+        
+        if fm.fileExists(atPath: sourceURL.path) {
+            try fm.copyItem(at: sourceURL, to: destURL)
+        }
+    }
+}
+
+func cleanupOldAssets() async throws {
+    let ASSETS_DIR = URL(fileURLWithPath: "./Sources/PhosphorSwift/Resources/Assets.xcassets", isDirectory: true)
+    let fm = FileManager.default
+    
+    // Remove the old SVG assets directory
+    let svgAssetsDir = ASSETS_DIR.appendingPathComponent("SVG")
+    if fm.fileExists(atPath: svgAssetsDir.path) {
+        try fm.removeItem(at: svgAssetsDir)
+    }
+}
+
+enum BuildError: Error {
+    case cannotEnumerateAssets
+    case missingCoreAssets
 }
 
 func emitSource(icons: Set<String>) async throws {
     let ICONS_SOURCE = URL(fileURLWithPath: "./Sources/PhosphorSwift/Icons.swift", isDirectory: false)
     
     let enumEntries = icons.sorted().map { name in
-        "    case \(name.camelCased(with: "-")) = \"\(name)\""
+        let caseName = name.camelCased(with: "-")
+        // Handle Swift keywords
+        if caseName == "repeat" {
+            return "    case `\(caseName)` = \"\(name)\""
+        }
+        return "    case \(caseName) = \"\(name)\""
     }
     let source = """
     //
