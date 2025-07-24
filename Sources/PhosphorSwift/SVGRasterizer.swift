@@ -229,12 +229,12 @@ public enum SVGRasterizer {
         switch colorString.lowercased() {
         case "currentcolor", "currentColor":
             // Default to black for template rendering - will be recolored by SwiftUI
-            return CGColor.black
+            return CGColor(red: 0, green: 0, blue: 0, alpha: 1)
         case "none", "transparent":
-            return CGColor.clear
+            return CGColor(red: 0, green: 0, blue: 0, alpha: 0)
         default:
             // For hex colors, RGB, etc. - simplified for Phosphor use case
-            return CGColor.black
+            return CGColor(red: 0, green: 0, blue: 0, alpha: 1)
         }
     }
 }
